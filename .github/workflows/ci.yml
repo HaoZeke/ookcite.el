@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  emacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Emacs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emacs-nox
+
+      - name: Run ERT
+        run: make test
+
+      - name: Byte compile
+        run: make compile
+
+      - name: Run checkdoc
+        run: make checkdoc
+
+      - name: Install package-lint
+        run: |
+          emacs -Q --batch \
+            --eval "(setq package-user-dir \"$RUNNER_TEMP/elpa\")" \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'package-lint)"
+
+      - name: Run package-lint
+        run: |
+          emacs -Q --batch \
+            --eval "(setq package-user-dir \"$RUNNER_TEMP/elpa\")" \
+            --eval "(require 'package)" \
+            --eval "(package-initialize)" \
+            -L . \
+            --eval "(require 'package-lint)" \
+            --eval "(package-lint-batch-and-exit)" \
+            ookcite.el
