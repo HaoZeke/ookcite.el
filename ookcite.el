@@ -230,8 +230,6 @@ The function receives ITEM, PDF-FILE, and citation KEY."
 (defvar ookcite-ridley--completion-choices nil
   "Current Ridley completion candidates keyed by display string.")
 
-(defvar embark-keymap-alist nil)
-
 (defun ookcite--nonempty-string-p (value)
   "Return non-nil when VALUE is a non-empty string."
   (and (stringp value)
@@ -1652,9 +1650,12 @@ When NO-MATERIALIZE is non-nil, return cache paths without extracting."
   (interactive)
   (unless (boundp 'embark-keymap-alist)
     (signal 'ookcite-error (list "Embark is not loaded")))
-  (add-to-list 'embark-keymap-alist
-               (cons 'ookcite-ridley-item ookcite-ridley-embark-map))
-  embark-keymap-alist)
+  (let ((entry (cons 'ookcite-ridley-item ookcite-ridley-embark-map))
+        (keymaps (symbol-value 'embark-keymap-alist)))
+    (unless (member entry keymaps)
+      (set-default-toplevel-value 'embark-keymap-alist
+                                  (cons entry keymaps))))
+  (symbol-value 'embark-keymap-alist))
 
 (defun ookcite-ridley-read-item ()
   "Prompt for a Ridley item from configured JSON sources."

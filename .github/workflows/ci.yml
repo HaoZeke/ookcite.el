@@ -27,22 +27,7 @@ jobs:
         run: make checkdoc
 
       - name: Install package-lint
-        run: |
-          emacs -Q --batch \
-            --eval "(setq package-user-dir \"$RUNNER_TEMP/elpa\")" \
-            --eval "(require 'package)" \
-            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
-            --eval "(package-initialize)" \
-            --eval "(package-refresh-contents)" \
-            --eval "(package-install 'package-lint)"
+        run: make package-lint-install PACKAGE_USER_DIR="$RUNNER_TEMP/elpa"
 
       - name: Run package-lint
-        run: |
-          emacs -Q --batch \
-            --eval "(setq package-user-dir \"$RUNNER_TEMP/elpa\")" \
-            --eval "(require 'package)" \
-            --eval "(package-initialize)" \
-            -L . \
-            --eval "(require 'package-lint)" \
-            --eval "(package-lint-batch-and-exit)" \
-            ookcite.el
+        run: make package-lint PACKAGE_USER_DIR="$RUNNER_TEMP/elpa"

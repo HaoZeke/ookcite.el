@@ -158,3 +158,10 @@ make compile
 make checkdoc
 make package-lint
 ```
+
+If `package-lint` is installed outside the default `emacs -Q` package path,
+point the target at it:
+
+```sh
+make package-lint PACKAGE_LINT_LOAD_PATH=/path/to/package-lint
+```

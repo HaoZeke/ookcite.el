@@ -448,10 +448,19 @@
     (should (eq (ookcite-ridley-candidate-item "Attention") item))))
 
 (ert-deftest ookcite-test-embark-setup-registers-ridley-category ()
-  (let ((embark-keymap-alist nil))
-    (ookcite-embark-setup)
-    (should (eq (alist-get 'ookcite-ridley-item embark-keymap-alist)
-                ookcite-ridley-embark-map))))
+  (let ((previous-bound (boundp 'embark-keymap-alist))
+        (previous-value (and (boundp 'embark-keymap-alist)
+                             (symbol-value 'embark-keymap-alist))))
+    (unwind-protect
+        (progn
+          (set 'embark-keymap-alist nil)
+          (ookcite-embark-setup)
+          (should (eq (alist-get 'ookcite-ridley-item
+                                 (symbol-value 'embark-keymap-alist))
+                      ookcite-ridley-embark-map)))
+      (if previous-bound
+          (set 'embark-keymap-alist previous-value)
+        (makunbound 'embark-keymap-alist)))))
 
 (ert-deftest ookcite-test-add-entry-to-collection-async ()
   (let* ((entry '((title . "Async Paper")
