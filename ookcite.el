@@ -31,12 +31,14 @@
 ;;
 ;; The OokCite layer resolves DOI/ISBN/free-text citations, appends BibTeX,
 ;; inserts org-cite references, searches CSL styles, formats references, and
-;; imports/exports OokCite collections.
+;; imports/exports OokCite collections, including one-entry imports for
+;; adding a resolved citation directly to a collection.
 ;;
 ;; The Ridley layer creates org-noter-compatible notes from Ridley item JSON,
 ;; seed fixture JSON, or a chosen PDF path.  It writes `:NOTER_DOCUMENT:' plus
-;; Ridley identifiers as Org properties so the note opens like the old
-;; org-ref/org-noter PDF reading flow.
+;; Ridley identifiers as Org properties so the note opens like an
+;; org-ref/org-noter-style PDF reading flow.  It can also open that flow from an
+;; org-cite key at point.
 
 ;;; Code:
 
@@ -812,6 +814,21 @@ into the BibTeX `file' field when non-nil."
   "Insert org-cite KEY at point."
   (insert (format "%s:@%s" ookcite-org-cite-prefix key)))
 
+(defun ookcite-citation-key-at-point ()
+  "Return an org-cite or BibTeX citation key at point, or nil."
+  (let ((position (point))
+        key)
+    (save-excursion
+      (goto-char (line-beginning-position))
+      (while (and (not key)
+                  (re-search-forward
+                   "@\\([[:alnum:]_:+.-]+\\)"
+                   (line-end-position) t))
+        (when (and (>= position (match-beginning 0))
+                   (<= position (match-end 1)))
+          (setq key (match-string-no-properties 1)))))
+    key))
+
 ;;;###autoload
 (defun ookcite-add-doi-to-bib (doi &optional bib-file pdf-file)
   "Look up DOI and add it to BIB-FILE.
@@ -932,6 +949,56 @@ FORMAT is usually `bibtex' or `ris'."
                     (buffer-string)))
       (format . ,format))
     "POST" nil `((id . ,collection-id)))))
+
+;;;###autoload
+(defun ookcite-add-entry-to-collection (entry collection-id
+                                              &optional key pdf-file)
+  "Import ENTRY into OokCite COLLECTION-ID as a single BibTeX record.
+
+KEY overrides the generated citation key.  PDF-FILE is written to the
+BibTeX `file' field when non-nil."
+  (ookcite-request
+   'collection-import
+   `((content . ,(ookcite-entry-bibtex entry key pdf-file))
+     (format . "bibtex"))
+   "POST" nil `((id . ,collection-id))))
+
+;;;###autoload
+(defun ookcite-add-doi-to-collection (doi collection-id &optional pdf-file)
+  "Look up DOI and import it into OokCite COLLECTION-ID.
+
+PDF-FILE is written to the generated BibTeX `file' field when non-nil."
+  (interactive
+   (list (read-string "DOI: ")
+         (ookcite--read-collection-id t)
+         (let ((file (read-file-name "PDF file, empty for none: " nil nil nil)))
+           (and (ookcite--nonempty-string-p file) file))))
+  (let ((response
+         (ookcite-add-entry-to-collection
+          (ookcite-lookup-doi-sync doi) collection-id nil pdf-file)))
+    (when (called-interactively-p 'interactive)
+      (message "Imported DOI into %s" collection-id))
+    response))
+
+;;;###autoload
+(defun ookcite-add-citation-to-collection (query collection-id
+                                                 &optional pdf-file)
+  "Resolve QUERY and import the selected result into COLLECTION-ID.
+
+PDF-FILE is written to the generated BibTeX `file' field when non-nil."
+  (interactive
+   (list (read-string "Citation, DOI, ISBN, or title: ")
+         (ookcite--read-collection-id t)
+         (let ((file (read-file-name "PDF file, empty for none: " nil nil nil)))
+           (and (ookcite--nonempty-string-p file) file))))
+  (let* ((entries (ookcite--candidate-metadata-list
+                   (ookcite-resolve-sync query)))
+         (entry (ookcite--read-entry entries))
+         (response
+          (ookcite-add-entry-to-collection entry collection-id nil pdf-file)))
+    (when (called-interactively-p 'interactive)
+      (message "Imported citation into %s" collection-id))
+    response))
 
 ;;;###autoload
 (defun ookcite-export-collection-bibtex (collection-id file)
@@ -1098,6 +1165,24 @@ FORMAT is usually `bibtex' or `ris'."
           (ookcite-ridley-item-pdf-file item)))
    " | "))
 
+(defun ookcite-ridley--item-citation-keys (item)
+  "Return possible citation keys for Ridley ITEM."
+  (delete-dups
+   (cl-remove-if-not
+    #'ookcite--nonempty-string-p
+    (list (ookcite-ridley--field item 'citationKey)
+          (ookcite-ridley--field item 'citation_key)
+          (ookcite-ridley--field item 'citekey)
+          (ookcite-ridley--field item 'key)
+          (ookcite-entry-citation-key item)))))
+
+(defun ookcite-ridley-find-item-by-key (key)
+  "Return the Ridley item matching citation KEY, or nil."
+  (cl-find-if
+   (lambda (item)
+     (member key (ookcite-ridley--item-citation-keys item)))
+   (ookcite-ridley-all-items)))
+
 (defun ookcite-ridley-read-item ()
   "Prompt for a Ridley item from configured JSON sources."
   (let* ((items (ookcite-ridley-all-items))
@@ -1215,6 +1300,18 @@ Interactively, choose from `ookcite-ridley-item-json-files'."
     (ookcite-ridley-create-note item pdf-file)))
 
 ;;;###autoload
+(defun ookcite-ridley-read-at-point (&optional key)
+  "Create/open a Ridley reading note for citation KEY at point."
+  (interactive)
+  (let* ((cite-key (or key
+                       (ookcite-citation-key-at-point)
+                       (read-string "Citation key: ")))
+         (item (ookcite-ridley-find-item-by-key cite-key)))
+    (unless item
+      (user-error "No Ridley item found for %s" cite-key))
+    (ookcite-ridley-read item)))
+
+;;;###autoload
 (defun ookcite-ridley-add-doi-and-read (doi bib-file pdf-file)
   "Add DOI to BIB-FILE with PDF-FILE and create/open a reading note."
   (interactive
@@ -1230,11 +1327,14 @@ Interactively, choose from `ookcite-ridley-item-json-files'."
     (define-key map (kbd "C-c C-o c") #'ookcite-insert-org-cite)
     (define-key map (kbd "C-c C-o d") #'ookcite-insert-org-cite-from-doi)
     (define-key map (kbd "C-c C-o a") #'ookcite-add-citation-to-bib)
+    (define-key map (kbd "C-c C-o A") #'ookcite-add-citation-to-collection)
+    (define-key map (kbd "C-c C-o D") #'ookcite-add-doi-to-collection)
     (define-key map (kbd "C-c C-o f") #'ookcite-format-doi)
     (define-key map (kbd "C-c C-o l") #'ookcite-lookup-doi)
     (define-key map (kbd "C-c C-o p") #'ookcite-parse-region)
     (define-key map (kbd "C-c C-o s") #'ookcite-search-styles)
     (define-key map (kbd "C-c C-o r") #'ookcite-ridley-read)
+    (define-key map (kbd "C-c C-o R") #'ookcite-ridley-read-at-point)
     map)
   "Keymap for `ookcite-mode'.")
 

@@ -81,6 +81,75 @@
           (should-not (ookcite--bibtex-key-exists-p file "doe2021")))
       (delete-file file))))
 
+(ert-deftest ookcite-test-add-entry-to-collection-imports-single-bibtex ()
+  (let* ((entry '((title . "Collection Paper")
+                  (entry_type . "Article")
+                  (authors . (((family . "Curie") (given . "Marie"))))
+                  (date . ((year . 1911)))
+                  (doi . "10.5555/collection")))
+         (captured nil))
+    (cl-letf (((symbol-function 'ookcite-request)
+               (lambda (endpoint data method query params &optional raw)
+                 (setq captured
+                       (list endpoint data method query params raw))
+                 '((imported . 1)))))
+      (should (equal (ookcite-add-entry-to-collection
+                      entry "readings" "curie1911" "/tmp/curie.pdf")
+                     '((imported . 1))))
+      (pcase-let ((`(,endpoint ,data ,method ,query ,params ,raw) captured))
+        (should (eq endpoint 'collection-import))
+        (should (equal method "POST"))
+        (should-not query)
+        (should-not raw)
+        (should (equal params '((id . "readings"))))
+        (should (equal (ookcite--get data 'format) "bibtex"))
+        (should (string-match-p "@article{curie1911,"
+                                (ookcite--get data 'content)))
+        (should (string-match-p "file = {/tmp/curie.pdf},"
+                                (ookcite--get data 'content)))))))
+
+(ert-deftest ookcite-test-add-doi-to-collection-uses-lookup-result ()
+  (let ((entry '((title . "Lookup Paper")
+                 (authors . (((family . "Noether") (given . "Emmy"))))
+                 (date . ((year . 1918)))
+                 (doi . "10.5555/noether")))
+        captured)
+    (cl-letf (((symbol-function 'ookcite-lookup-doi-sync)
+               (lambda (doi)
+                 (should (equal doi "10.5555/noether"))
+                 entry))
+              ((symbol-function 'ookcite-add-entry-to-collection)
+               (lambda (entry collection-id &optional key pdf-file)
+                 (setq captured
+                       (list entry collection-id key pdf-file))
+                 '((imported . 1)))))
+      (should (equal (ookcite-add-doi-to-collection
+                      "10.5555/noether" "math" "/tmp/noether.pdf")
+                     '((imported . 1))))
+      (should (equal captured
+                     (list entry "math" nil "/tmp/noether.pdf"))))))
+
+(ert-deftest ookcite-test-add-citation-to-collection-uses-resolve-result ()
+  (let ((entry '((title . "Resolved Paper")
+                 (authors . (((family . "Franklin") (given . "Rosalind"))))
+                 (date . ((year . 1953)))
+                 (doi . "10.5555/franklin")))
+        captured)
+    (cl-letf (((symbol-function 'ookcite-resolve-sync)
+               (lambda (query)
+                 (should (equal query "Franklin DNA 1953"))
+                 `((paper . ,entry))))
+              ((symbol-function 'ookcite-add-entry-to-collection)
+               (lambda (entry collection-id &optional key pdf-file)
+                 (setq captured
+                       (list entry collection-id key pdf-file))
+                 '((imported . 1)))))
+      (should (equal (ookcite-add-citation-to-collection
+                      "Franklin DNA 1953" "biology" "/tmp/franklin.pdf")
+                     '((imported . 1))))
+      (should (equal captured
+                     (list entry "biology" nil "/tmp/franklin.pdf"))))))
+
 (ert-deftest ookcite-test-ridley-seed-file-items ()
   (let ((file (make-temp-file "ookcite-ridley" nil ".json")))
     (unwind-protect
@@ -110,6 +179,46 @@
     (should (string-match-p ":NOTER_DOCUMENT: /tmp/readable.pdf" note))
     (should (string-match-p ":RIDLEY_ITEM_ID: 01ABC" note))
     (should (string-match-p "cite:@lovelace1843" note))))
+
+(ert-deftest ookcite-test-citation-key-at-point ()
+  (with-temp-buffer
+    (insert "See cite:@vaswani2017 for the transformer baseline.")
+    (goto-char (point-min))
+    (search-forward "vaswani")
+    (should (equal (ookcite-citation-key-at-point) "vaswani2017"))))
+
+(ert-deftest ookcite-test-ridley-find-item-by-key ()
+  (let ((item '((itemType . "journalArticle")
+                (title . "Attention Is All You Need")
+                (creators . (((firstName . "Ashish") (lastName . "Vaswani"))))
+                (date . "2017")
+                (DOI . "10.5555/attention")
+                (attachmentPath . "/tmp/attention.pdf"))))
+    (cl-letf (((symbol-function 'ookcite-ridley-all-items)
+               (lambda () (list item))))
+      (should (eq (ookcite-ridley-find-item-by-key "vaswani2017") item)))))
+
+(ert-deftest ookcite-test-ridley-read-at-point-opens-matched-item ()
+  (let ((item '((itemType . "journalArticle")
+                (title . "Attention Is All You Need")
+                (creators . (((firstName . "Ashish") (lastName . "Vaswani"))))
+                (date . "2017")
+                (attachmentPath . "/tmp/attention.pdf")))
+        selected)
+    (with-temp-buffer
+      (insert "Review cite:@vaswani2017 before annotating.")
+      (goto-char (point-min))
+      (search-forward "vaswani")
+      (cl-letf (((symbol-function 'ookcite-ridley-find-item-by-key)
+                 (lambda (key)
+                   (should (equal key "vaswani2017"))
+                   item))
+                ((symbol-function 'ookcite-ridley-read)
+                 (lambda (&optional item)
+                   (setq selected item)
+                   "opened")))
+        (should (equal (ookcite-ridley-read-at-point) "opened"))
+        (should (eq selected item))))))
 
 (provide 'ookcite-test)
 ;;; ookcite-test.el ends here

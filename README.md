@@ -8,9 +8,10 @@ work, and to Ridley-style PDF metadata for reading notes.
 - Resolve DOI, ISBN, title, or messy citation text through OokCite.
 - Append resolved entries to BibTeX files and insert `cite:@key` references.
 - Search CSL styles and format references.
-- Import/export OokCite collections as BibTeX/RIS.
+- Import/export OokCite collections as BibTeX/RIS, including adding one
+  resolved citation directly to a collection.
 - Create org-noter-compatible reading notes from Ridley item JSON or a chosen
-  PDF path.
+  PDF path, including from a citation key at point.
 
 ## Installation
 
@@ -65,15 +66,20 @@ machine ookcite-api.turtletech.us login apikey password ookc_...
 | `C-c C-o c` | `ookcite-insert-org-cite` |
 | `C-c C-o d` | `ookcite-insert-org-cite-from-doi` |
 | `C-c C-o a` | `ookcite-add-citation-to-bib` |
+| `C-c C-o A` | `ookcite-add-citation-to-collection` |
+| `C-c C-o D` | `ookcite-add-doi-to-collection` |
 | `C-c C-o f` | `ookcite-format-doi` |
 | `C-c C-o l` | `ookcite-lookup-doi` |
 | `C-c C-o p` | `ookcite-parse-region` |
 | `C-c C-o s` | `ookcite-search-styles` |
 | `C-c C-o r` | `ookcite-ridley-read` |
+| `C-c C-o R` | `ookcite-ridley-read-at-point` |
 
 Collection helpers:
 
 - `ookcite-list-collections`
+- `ookcite-add-doi-to-collection`
+- `ookcite-add-citation-to-collection`
 - `ookcite-import-bibliography-file`
 - `ookcite-export-collection-bibtex`
 - `ookcite-check-collection-duplicates`
@@ -82,6 +88,7 @@ Collection helpers:
 Ridley reading helpers:
 
 - `ookcite-ridley-read`
+- `ookcite-ridley-read-at-point`
 - `ookcite-ridley-read-pdf`
 - `ookcite-ridley-add-doi-and-read`
 
@@ -90,6 +97,10 @@ Ridley reading helpers:
 an `items` array, a raw array of item records, or a single item object. PDF
 paths are read from `attachmentPath` or asset extras such as `local_path`,
 `path`, and `attachmentPath`.
+
+`ookcite-ridley-read-at-point` reads the org-cite key under point, matches it
+against explicit Ridley key fields or the generated citation key, and opens the
+same reading-note flow.
 
 The note shape matches the org-ref/org-noter flow:
 
