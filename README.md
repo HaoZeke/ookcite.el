@@ -62,14 +62,14 @@ machine ookcite-api.turtletech.us login apikey password ookc_...
 
 | Key | Command |
 | --- | --- |
-| `C-c o c` | `ookcite-insert-org-cite` |
-| `C-c o d` | `ookcite-insert-org-cite-from-doi` |
-| `C-c o a` | `ookcite-add-citation-to-bib` |
-| `C-c o f` | `ookcite-format-doi` |
-| `C-c o l` | `ookcite-lookup-doi` |
-| `C-c o p` | `ookcite-parse-region` |
-| `C-c o s` | `ookcite-search-styles` |
-| `C-c o r` | `ookcite-ridley-read` |
+| `C-c C-o c` | `ookcite-insert-org-cite` |
+| `C-c C-o d` | `ookcite-insert-org-cite-from-doi` |
+| `C-c C-o a` | `ookcite-add-citation-to-bib` |
+| `C-c C-o f` | `ookcite-format-doi` |
+| `C-c C-o l` | `ookcite-lookup-doi` |
+| `C-c C-o p` | `ookcite-parse-region` |
+| `C-c C-o s` | `ookcite-search-styles` |
+| `C-c C-o r` | `ookcite-ridley-read` |
 
 Collection helpers:
 

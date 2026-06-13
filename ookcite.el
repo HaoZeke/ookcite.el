@@ -491,14 +491,14 @@ RAW is forwarded to `ookcite--read-response'."
 (defun ookcite--entry-summary (entry)
   "Return one-line display summary for ENTRY."
   (let ((title (ookcite--entry-title entry))
-        (authors (ookcite-entry-authors-string entry))
+        (author-list (ookcite-entry-authors-string entry))
         (year (ookcite--entry-year entry))
         (doi (ookcite--entry-doi entry)))
     (string-join
      (cl-remove-if-not
       #'ookcite--nonempty-string-p
       (list title
-            (and authors (format "[%s]" authors))
+            (and author-list (format "[%s]" author-list))
             year
             doi))
      " | ")))
@@ -736,7 +736,7 @@ field compatible with org-ref and bibtex-completion."
   (let* ((cite-key (or key (ookcite-entry-citation-key entry)))
          (lines (list (format "@%s{%s,"
                               (ookcite--bibtex-kind entry) cite-key)))
-         (authors (ookcite--entry-authors entry))
+         (author-list (ookcite--entry-authors entry))
          (year (ookcite--entry-year entry)))
     (cl-labels ((push-field
                  (name value)
@@ -745,9 +745,9 @@ field compatible with org-ref and bibtex-completion."
                                  name (ookcite--bibtex-escape value))
                          lines))))
       (push-field "title" (ookcite--entry-title entry))
-      (when authors
+      (when author-list
         (push-field "author"
-                    (mapconcat #'ookcite--person-bibtex authors " and ")))
+                    (mapconcat #'ookcite--person-bibtex author-list " and ")))
       (push-field "year" year)
       (push-field "journal"
                   (ookcite--entry-field entry 'journal 'container-title
@@ -1227,14 +1227,14 @@ Interactively, choose from `ookcite-ridley-item-json-files'."
 
 (defvar ookcite-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c o c") #'ookcite-insert-org-cite)
-    (define-key map (kbd "C-c o d") #'ookcite-insert-org-cite-from-doi)
-    (define-key map (kbd "C-c o a") #'ookcite-add-citation-to-bib)
-    (define-key map (kbd "C-c o f") #'ookcite-format-doi)
-    (define-key map (kbd "C-c o l") #'ookcite-lookup-doi)
-    (define-key map (kbd "C-c o p") #'ookcite-parse-region)
-    (define-key map (kbd "C-c o s") #'ookcite-search-styles)
-    (define-key map (kbd "C-c o r") #'ookcite-ridley-read)
+    (define-key map (kbd "C-c C-o c") #'ookcite-insert-org-cite)
+    (define-key map (kbd "C-c C-o d") #'ookcite-insert-org-cite-from-doi)
+    (define-key map (kbd "C-c C-o a") #'ookcite-add-citation-to-bib)
+    (define-key map (kbd "C-c C-o f") #'ookcite-format-doi)
+    (define-key map (kbd "C-c C-o l") #'ookcite-lookup-doi)
+    (define-key map (kbd "C-c C-o p") #'ookcite-parse-region)
+    (define-key map (kbd "C-c C-o s") #'ookcite-search-styles)
+    (define-key map (kbd "C-c C-o r") #'ookcite-ridley-read)
     map)
   "Keymap for `ookcite-mode'.")
 
