@@ -237,6 +237,38 @@
       (delete-directory dir t)
       (delete-directory cache-dir t))))
 
+(ert-deftest ookcite-test-ridley-completion-annotation-keeps-zip-pdf-cold ()
+  (let* ((dir (make-temp-file "ookcite-ridley-zip-src" t))
+         (cache-dir (make-temp-file "ookcite-ridley-zip-cache" t))
+         (metadata-dir (expand-file-name "metadata" dir))
+         (files-dir (expand-file-name "files" dir))
+         (zip-file (expand-file-name "bundle.ridley.zip" dir)))
+    (unwind-protect
+        (progn
+          (make-directory metadata-dir t)
+          (make-directory files-dir t)
+          (with-temp-file (expand-file-name "item.json" metadata-dir)
+            (insert "{\"title\":\"Cold Paper\",\"creators\":[{\"firstName\":\"Grace\",\"lastName\":\"Hopper\"}],\"date\":\"1952\"}"))
+          (with-temp-file (expand-file-name "manifest.json" metadata-dir)
+            (insert "{\"files\":[{\"path\":\"files/paper.pdf\",\"content_type\":\"application/pdf\"}]}"))
+          (with-temp-file (expand-file-name "paper.pdf" files-dir)
+            (insert "%PDF-1.7\nCold"))
+          (let ((default-directory dir))
+            (should (zerop (process-file "zip" nil nil nil "-qr"
+                                         zip-file "metadata" "files"))))
+          (let* ((ookcite-ridley-bundle-extract-directory cache-dir)
+                 (item (car (ookcite-ridley-read-items-from-file zip-file)))
+                 (candidate "Cold")
+                 (choices `((,candidate . ,item)))
+                 (cache-file (ookcite-ridley-item-pdf-file item t)))
+            (should-not (file-exists-p cache-file))
+            (should (string-match-p "1952"
+                                    (ookcite-ridley--completion-annotation
+                                     choices candidate)))
+            (should-not (file-exists-p cache-file))))
+      (delete-directory dir t)
+      (delete-directory cache-dir t))))
+
 (ert-deftest ookcite-test-ridley-note-text ()
   (let* ((item '((item_id . "01ABC")
                  (itemType . "journalArticle")
@@ -359,6 +391,39 @@
               (should (= (length (ookcite-ridley-all-items)) 1))
               (should (= calls 1)))))
       (delete-file file))))
+
+(ert-deftest ookcite-test-ridley-directory-bundle-cache-includes-metadata ()
+  (let* ((dir (make-temp-file "ookcite-ridley-cache-bundle" t))
+         (metadata-dir (expand-file-name "metadata" dir))
+         (files-dir (expand-file-name "files" dir))
+         (item-file (expand-file-name "item.json" metadata-dir))
+         (manifest-file (expand-file-name "manifest.json" metadata-dir))
+         (fixed-directory-time (encode-time 0 0 0 1 1 2026)))
+    (unwind-protect
+        (progn
+          (make-directory metadata-dir t)
+          (make-directory files-dir t)
+          (with-temp-file item-file
+            (insert "{\"title\":\"First\",\"attachmentPath\":\"files/paper.pdf\"}"))
+          (with-temp-file manifest-file
+            (insert "{\"files\":[{\"path\":\"files/paper.pdf\",\"content_type\":\"application/pdf\"}]}"))
+          (with-temp-file (expand-file-name "paper.pdf" files-dir)
+            (insert "%PDF-1.7\n"))
+          (set-file-times dir fixed-directory-time)
+          (let ((ookcite-ridley-item-json-files (list dir))
+                (ookcite-ridley-cache-items t))
+            (ookcite-ridley-clear-cache)
+            (should (equal (ookcite--entry-title
+                            (car (ookcite-ridley-all-items)))
+                           "First"))
+            (with-temp-file item-file
+              (insert "{\"title\":\"Second\",\"attachmentPath\":\"files/paper.pdf\"}"))
+            (set-file-times item-file (encode-time 0 0 0 2 1 2026))
+            (set-file-times dir fixed-directory-time)
+            (should (equal (ookcite--entry-title
+                            (car (ookcite-ridley-all-items)))
+                           "Second"))))
+      (delete-directory dir t))))
 
 (ert-deftest ookcite-test-ridley-completion-table-has-metadata ()
   (let* ((item '((title . "Attention Is All You Need")

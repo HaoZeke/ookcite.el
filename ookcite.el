@@ -1379,12 +1379,29 @@ When NOERROR is non-nil, return nil for missing entries."
   "Return configured Ridley source files that exist."
   (cl-remove-if-not #'file-exists-p ookcite-ridley-item-json-files))
 
+(defun ookcite-ridley--path-signature (file)
+  "Return cache signature data for FILE."
+  (when (file-exists-p file)
+    (let ((attributes (file-attributes file)))
+      (list file
+            (file-attribute-modification-time attributes)
+            (file-attribute-size attributes)))))
+
+(defun ookcite-ridley--source-file-signature (file)
+  "Return cache signature data for Ridley source FILE."
+  (if (file-directory-p file)
+      (list 'directory
+            (ookcite-ridley--path-signature file)
+            (ookcite-ridley--path-signature
+             (ookcite-ridley--bundle-metadata-file file "item.json"))
+            (ookcite-ridley--path-signature
+             (ookcite-ridley--bundle-metadata-file file "manifest.json")))
+    (list 'file (ookcite-ridley--path-signature file))))
+
 (defun ookcite-ridley--source-signature ()
   "Return cache signature for configured Ridley source files."
-  (mapcar
-   (lambda (file)
-     (list file (file-attribute-modification-time (file-attributes file))))
-   (ookcite-ridley--source-files)))
+  (mapcar #'ookcite-ridley--source-file-signature
+          (ookcite-ridley--source-files)))
 
 ;;;###autoload
 (defun ookcite-ridley-clear-cache ()
@@ -1551,7 +1568,7 @@ When NO-MATERIALIZE is non-nil, return cache paths without extracting."
        #'ookcite--nonempty-string-p
        (list (ookcite--entry-year item)
              (ookcite--entry-doi item)
-             (ookcite-ridley-item-pdf-file item)))
+             (ookcite-ridley-item-pdf-file item t)))
       " | "))))
 
 (defun ookcite-ridley--completion-table (choices)
