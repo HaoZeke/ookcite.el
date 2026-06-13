@@ -156,6 +156,14 @@ array, or a single item object."
   :type 'boolean
   :group 'ookcite)
 
+(defcustom ookcite-ridley-bundle-extract-directory
+  (expand-file-name "ookcite/ridley-bundles/"
+                    (or (getenv "XDG_CACHE_HOME")
+                        (expand-file-name "~/.cache")))
+  "Directory used for materialized PDFs from Ridley item bundles."
+  :type 'directory
+  :group 'ookcite)
+
 (defcustom ookcite-ridley-open-note-after-create t
   "Non-nil means Ridley reading commands call `org-noter' when available."
   :type 'boolean
@@ -218,6 +226,11 @@ The function receives ITEM, PDF-FILE, and citation KEY."
 
 (defvar ookcite-ridley--items-cache-signature nil
   "Source-file signature for `ookcite-ridley--items-cache'.")
+
+(defvar ookcite-ridley--completion-choices nil
+  "Current Ridley completion candidates keyed by display string.")
+
+(defvar embark-keymap-alist nil)
 
 (defun ookcite--nonempty-string-p (value)
   "Return non-nil when VALUE is a non-empty string."
@@ -1215,6 +1228,72 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
      :null-object nil
      :false-object :json-false)))
 
+(defun ookcite-ridley--json-string (contents)
+  "Read CONTENTS as JSON and return alists/lists."
+  (with-temp-buffer
+    (insert contents)
+    (goto-char (point-min))
+    (json-parse-buffer
+     :object-type 'alist
+     :array-type 'list
+     :null-object nil
+     :false-object :json-false)))
+
+(defun ookcite-ridley--zip-file-p (file)
+  "Return non-nil when FILE names a Ridley zip bundle."
+  (and (file-regular-p file)
+       (string-match-p "\\(?:\\.ridley\\|\\.zip\\)\\'" file)))
+
+(defun ookcite-ridley--zip-entry-bytes (zip-file entry &optional noerror)
+  "Return raw bytes for ENTRY from ZIP-FILE.
+
+When NOERROR is non-nil, return nil for missing entries."
+  (unless (executable-find "unzip")
+    (signal 'ookcite-error (list "The unzip executable is required")))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (let ((status (process-file "unzip" nil t nil "-p" zip-file entry)))
+      (cond
+       ((zerop status) (buffer-string))
+       (noerror nil)
+       (t (signal 'ookcite-error
+                  (list (format "Cannot read %s from %s" entry zip-file))))))))
+
+(defun ookcite-ridley--zip-json-entry (zip-file entry &optional noerror)
+  "Return JSON ENTRY from ZIP-FILE.
+
+When NOERROR is non-nil, return nil for missing entries."
+  (when-let ((bytes (ookcite-ridley--zip-entry-bytes zip-file entry noerror)))
+    (ookcite-ridley--json-string (decode-coding-string bytes 'utf-8))))
+
+(defun ookcite-ridley--safe-cache-name (entry)
+  "Return a filesystem-safe cache component for ENTRY."
+  (replace-regexp-in-string
+   "[^[:alnum:]._-]+" "_" (file-name-nondirectory entry)))
+
+(defun ookcite-ridley--zip-entry-cache-file (zip-file entry)
+  "Return materialized cache path for ENTRY from ZIP-FILE."
+  (let* ((attributes (file-attributes zip-file))
+         (signature (list zip-file entry
+                          (file-attribute-modification-time attributes)
+                          (file-attribute-size attributes)))
+         (hash (secure-hash 'sha1 (prin1-to-string signature))))
+    (expand-file-name
+     (format "%s-%s" hash (ookcite-ridley--safe-cache-name entry))
+     ookcite-ridley-bundle-extract-directory)))
+
+(defun ookcite-ridley--zip-entry-to-file (zip-file entry)
+  "Materialize ENTRY from ZIP-FILE and return the cache path."
+  (let ((target (ookcite-ridley--zip-entry-cache-file zip-file entry)))
+    (unless (file-exists-p target)
+      (make-directory (file-name-directory target) t)
+      (let ((bytes (ookcite-ridley--zip-entry-bytes zip-file entry)))
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (insert bytes)
+          (write-region (point-min) (point-max) target nil 'silent))))
+    target))
+
 (defun ookcite-ridley--bundle-metadata-file (bundle name)
   "Return metadata NAME path from directory BUNDLE."
   (expand-file-name name (expand-file-name "metadata" bundle)))
@@ -1254,6 +1333,23 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
                       `((ookcite_bundle_pdf_file
                          . ,(expand-file-name pdf-path bundle))))))))))
 
+(defun ookcite-ridley--zip-bundle-item (bundle)
+  "Return a Ridley item from zip BUNDLE."
+  (when-let ((item (ookcite-ridley--zip-json-entry
+                    bundle "metadata/item.json" t)))
+    (let* ((manifest (ookcite-ridley--zip-json-entry
+                      bundle "metadata/manifest.json" t))
+           (pdf-entry (and manifest
+                           (ookcite-ridley--manifest-primary-pdf manifest))))
+      (append item
+              `((ookcite_bundle_path . ,bundle)
+                (ookcite_bundle_kind . zip)
+                ,@(when pdf-entry
+                    `((ookcite_bundle_pdf_entry . ,pdf-entry)
+                      (ookcite_bundle_pdf_file
+                       . ,(ookcite-ridley--zip-entry-cache-file
+                           bundle pdf-entry)))))))))
+
 (defun ookcite-ridley--item-list (value)
   "Return a flat item list from Ridley JSON VALUE."
   (cond
@@ -1269,10 +1365,15 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
 
 (defun ookcite-ridley-read-items-from-file (file)
   "Return Ridley item records from FILE."
-  (if (file-directory-p file)
-      (when-let ((item (ookcite-ridley--directory-bundle-item file)))
-        (list item))
-    (ookcite-ridley--item-list (ookcite-ridley--json-file file))))
+  (cond
+   ((file-directory-p file)
+    (when-let ((item (ookcite-ridley--directory-bundle-item file)))
+      (list item)))
+   ((ookcite-ridley--zip-file-p file)
+    (when-let ((item (ookcite-ridley--zip-bundle-item file)))
+      (list item)))
+   (t
+    (ookcite-ridley--item-list (ookcite-ridley--json-file file)))))
 
 (defun ookcite-ridley--source-files ()
   "Return configured Ridley source files that exist."
@@ -1377,20 +1478,36 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
               (ookcite--get asset key)))
            '(local_path path attachmentPath))))
 
-(defun ookcite-ridley--item-path-candidates (item)
-  "Return local PDF path candidates for Ridley ITEM."
+(defun ookcite-ridley--item-bundle-pdf-file (item &optional materialize)
+  "Return bundled PDF path for ITEM.
+
+When MATERIALIZE is non-nil, extract archive-backed PDFs into the cache."
+  (or (and materialize
+           (eq (ookcite--get item 'ookcite_bundle_kind) 'zip)
+           (when-let ((bundle (ookcite--get item 'ookcite_bundle_path))
+                      (entry (ookcite--get item 'ookcite_bundle_pdf_entry)))
+             (ookcite-ridley--zip-entry-to-file bundle entry)))
+      (ookcite--get item 'ookcite_bundle_pdf_file)))
+
+(defun ookcite-ridley--item-path-candidates (item &optional materialize)
+  "Return local PDF path candidates for Ridley ITEM.
+
+When MATERIALIZE is non-nil, extract archive-backed PDFs into the cache."
   (let ((direct (ookcite-ridley--path-reference-candidates
                  (ookcite-ridley--field item 'attachmentPath)))
-        (bundle-pdf (ookcite--get item 'ookcite_bundle_pdf_file))
+        (bundle-pdf (ookcite-ridley--item-bundle-pdf-file item materialize))
         (asset-paths
          (apply #'append
                 (mapcar #'ookcite-ridley--asset-path-candidates
                         (or (ookcite--get item 'assets) nil)))))
     (delete-dups (append direct (and bundle-pdf (list bundle-pdf)) asset-paths))))
 
-(defun ookcite-ridley-item-pdf-file (item)
-  "Return the best local PDF file path for Ridley ITEM."
-  (let* ((candidates (ookcite-ridley--item-path-candidates item))
+(defun ookcite-ridley-item-pdf-file (item &optional no-materialize)
+  "Return the best local PDF file path for Ridley ITEM.
+
+When NO-MATERIALIZE is non-nil, return cache paths without extracting."
+  (let* ((candidates (ookcite-ridley--item-path-candidates
+                      item (not no-materialize)))
          (existing (cl-find-if #'file-exists-p candidates)))
     (or existing (car candidates))))
 
@@ -1403,7 +1520,7 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
           (ookcite-ridley--authors-string item)
           (ookcite--entry-year item)
           (ookcite--entry-doi item)
-          (ookcite-ridley-item-pdf-file item)))
+          (ookcite-ridley-item-pdf-file item t)))
    " | "))
 
 (defun ookcite-ridley--item-citation-keys (item)
@@ -1451,11 +1568,84 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
         (complete-with-action action (mapcar #'car choices)
                               string predicate)))))
 
+(defun ookcite-ridley-candidate-item (candidate)
+  "Return the Ridley item represented by completion CANDIDATE."
+  (or (cdr (assoc candidate ookcite-ridley--completion-choices))
+      (cdr (assoc candidate
+                  (cl-loop for item in (ookcite-ridley-all-items)
+                           when (ookcite-ridley-item-pdf-file item t)
+                           collect (cons (ookcite-ridley--item-summary item)
+                                         item))))
+      (signal 'ookcite-error (list "No Ridley item for candidate"))))
+
+(defun ookcite-ridley--candidate-citation-key (candidate)
+  "Return the citation key for Ridley completion CANDIDATE."
+  (let ((key (ookcite-entry-citation-key
+              (ookcite-ridley-candidate-item candidate))))
+    (unless (ookcite--nonempty-string-p key)
+      (signal 'ookcite-error (list "No citation key for Ridley item")))
+    key))
+
+;;;###autoload
+(defun ookcite-ridley-embark-read (candidate)
+  "Create/open a reading note for Ridley completion CANDIDATE."
+  (interactive "sRidley item: ")
+  (ookcite-ridley-read (ookcite-ridley-candidate-item candidate)))
+
+;;;###autoload
+(defun ookcite-ridley-embark-open-pdf (candidate)
+  "Open the PDF for Ridley completion CANDIDATE."
+  (interactive "sRidley item: ")
+  (let ((pdf-file (ookcite-ridley-item-pdf-file
+                   (ookcite-ridley-candidate-item candidate))))
+    (unless (ookcite--nonempty-string-p pdf-file)
+      (signal 'ookcite-error (list "No PDF file for Ridley item")))
+    (find-file pdf-file)))
+
+;;;###autoload
+(defun ookcite-ridley-embark-insert-citation (candidate)
+  "Insert an org-cite reference for Ridley completion CANDIDATE."
+  (interactive "sRidley item: ")
+  (insert (format "%s:@%s"
+                  ookcite-org-cite-prefix
+                  (ookcite-ridley--candidate-citation-key candidate))))
+
+;;;###autoload
+(defun ookcite-ridley-embark-add-to-collection (candidate &optional collection-id)
+  "Add Ridley completion CANDIDATE to COLLECTION-ID."
+  (interactive "sRidley item: ")
+  (let* ((item (ookcite-ridley-candidate-item candidate))
+         (collection (or collection-id (ookcite--read-collection-id))))
+    (ookcite-add-entry-to-collection
+     item collection (ookcite-entry-citation-key item)
+     (ookcite-ridley-item-pdf-file item))))
+
+(defvar ookcite-ridley-embark-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "r") #'ookcite-ridley-embark-read)
+    (define-key map (kbd "o") #'ookcite-ridley-embark-open-pdf)
+    (define-key map (kbd "i") #'ookcite-ridley-embark-insert-citation)
+    (define-key map (kbd "a") #'ookcite-ridley-embark-add-to-collection)
+    map)
+  "Embark keymap for Ridley item completion candidates.")
+
+;;;###autoload
+(defun ookcite-embark-setup ()
+  "Register OokCite completion actions with Embark."
+  (interactive)
+  (unless (boundp 'embark-keymap-alist)
+    (signal 'ookcite-error (list "Embark is not loaded")))
+  (add-to-list 'embark-keymap-alist
+               (cons 'ookcite-ridley-item ookcite-ridley-embark-map))
+  embark-keymap-alist)
+
 (defun ookcite-ridley-read-item ()
   "Prompt for a Ridley item from configured JSON sources."
   (let* ((items (ookcite-ridley-all-items))
          (items-with-docs
-          (cl-remove-if-not #'ookcite-ridley-item-pdf-file items))
+          (cl-remove-if-not
+           (lambda (item) (ookcite-ridley-item-pdf-file item t))
+           items))
          (choices
           (cl-loop for item in items-with-docs
                    collect (cons (ookcite-ridley--item-summary item) item)))
@@ -1464,6 +1654,7 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
                           ,(lambda (candidate)
                              (ookcite-ridley--completion-annotation
                               choices candidate)))))
+                   (setq ookcite-ridley--completion-choices choices)
                    (completing-read
                     "Ridley item: "
                     (ookcite-ridley--completion-table choices)
