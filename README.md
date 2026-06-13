@@ -9,9 +9,13 @@ work, and to Ridley-style PDF metadata for reading notes.
 - Append resolved entries to BibTeX files and insert `cite:@key` references.
 - Search CSL styles and format references.
 - Import/export OokCite collections as BibTeX/RIS, including adding one
-  resolved citation directly to a collection.
+  resolved citation directly to a collection with async interactive commands.
 - Create org-noter-compatible reading notes from Ridley item JSON or a chosen
   PDF path, including from a citation key at point.
+- Use Citar first when it is loaded: cached key-at-point, cached entries,
+  associated PDF files, and Citar's own completion UI.
+- Expose standard completion metadata, so Vertico and other completion UIs can
+  show annotations without package-specific glue.
 
 ## Installation
 
@@ -31,6 +35,16 @@ With `use-package`:
   (ookcite-ridley-notes-file "~/org/bibnotes.org")
   (ookcite-ridley-item-json-files
    '("~/Git/Github/TurtleTech-ehf/ridley-desktop/fixtures/seed.json")))
+```
+
+With Citar loaded, keep your normal Citar bibliography/file configuration. The
+OokCite/Ridley path checks Citar caches before reading BibTeX files directly:
+
+```elisp
+(use-package citar
+  :custom
+  (citar-bibliography '("~/refs/library.bib"))
+  (citar-library-paths '("~/refs/pdfs")))
 ```
 
 For a MELPA recipe:
@@ -74,6 +88,7 @@ machine ookcite-api.turtletech.us login apikey password ookc_...
 | `C-c C-o s` | `ookcite-search-styles` |
 | `C-c C-o r` | `ookcite-ridley-read` |
 | `C-c C-o R` | `ookcite-ridley-read-at-point` |
+| `C-c C-o o` | `ookcite-ridley-read-reference` |
 
 Collection helpers:
 
@@ -89,6 +104,7 @@ Ridley reading helpers:
 
 - `ookcite-ridley-read`
 - `ookcite-ridley-read-at-point`
+- `ookcite-ridley-read-reference`
 - `ookcite-ridley-read-bibtex-key`
 - `ookcite-ridley-read-pdf`
 - `ookcite-ridley-add-doi-and-read`
@@ -105,6 +121,13 @@ same reading-note flow. If no Ridley item matches, it falls back to configured
 BibTeX files and uses the entry's `file` field for the PDF path. Direct paths
 and bibtex-completion-style values such as `:/path/to/paper.pdf:PDF` are
 supported.
+
+When Citar is loaded, `ookcite-ridley-read-at-point` asks Citar for the key and
+cached entry first. `ookcite-ridley-read-reference` uses Citar's reference
+selector when available, which means Vertico/Orderless/Marginalia setups keep
+their normal bibliography UI. Ridley JSON files are cached until their
+modification times change; run `M-x ookcite-ridley-clear-cache` to clear that
+cache manually.
 
 The note shape matches the org-ref/org-noter flow:
 

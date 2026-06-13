@@ -115,6 +115,11 @@ When nil, commands consult `org-cite-global-bibliography'."
   :type 'boolean
   :group 'ookcite)
 
+(defcustom ookcite-use-citar t
+  "Non-nil means use Citar caches and commands when Citar is loaded."
+  :type 'boolean
+  :group 'ookcite)
+
 (defcustom ookcite-max-candidates 5
   "Maximum number of candidates requested from OokCite resolve."
   :type 'integer
@@ -144,6 +149,11 @@ When nil, `ookcite-ridley-read' prompts for a note file."
 Each file can be a Ridley seed fixture with an `items' array, a raw item
 array, or a single item object."
   :type '(repeat file)
+  :group 'ookcite)
+
+(defcustom ookcite-ridley-cache-items t
+  "Non-nil means cache parsed Ridley item JSON until source mtimes change."
+  :type 'boolean
   :group 'ookcite)
 
 (defcustom ookcite-ridley-open-note-after-create t
@@ -186,6 +196,12 @@ array, or a single item object."
     (collection-unshare . ("DELETE" . "/api/v1/collections/{id}/share"))))
 
 (defconst ookcite--user-agent "ookcite.el/0.1")
+
+(defvar ookcite-ridley--items-cache nil
+  "Cached Ridley item records.")
+
+(defvar ookcite-ridley--items-cache-signature nil
+  "Source-file signature for `ookcite-ridley--items-cache'.")
 
 (defun ookcite--nonempty-string-p (value)
   "Return non-nil when VALUE is a non-empty string."
@@ -785,23 +801,49 @@ field compatible with org-ref and bibtex-completion."
   (delete-dups
    (cl-remove-if-not
     #'ookcite--nonempty-string-p
-    (append ookcite-bibliography-files
+    (append (when (and ookcite-use-citar
+                       (boundp 'citar-bibliography))
+              (let ((bibliography (symbol-value 'citar-bibliography)))
+                (if (listp bibliography)
+                    bibliography
+                  (list bibliography))))
+            ookcite-bibliography-files
             (ookcite--org-bibliography-files)))))
+
+(defun ookcite-citar-entry-by-key (key)
+  "Return Citar's cached entry for KEY when Citar is available."
+  (when (and ookcite-use-citar
+             (fboundp 'citar-get-entry))
+    (funcall 'citar-get-entry key)))
+
+(defun ookcite-citar-pdf-file-by-key (key)
+  "Return the first Citar PDF file associated with KEY, or nil."
+  (when (and ookcite-use-citar
+             (fboundp 'citar-get-files))
+    (let* ((files-by-key (funcall 'citar-get-files key))
+           (files (and (hash-table-p files-by-key)
+                       (gethash key files-by-key))))
+      (cl-find-if
+       (lambda (file)
+         (and (ookcite--nonempty-string-p file)
+              (string-match-p "\\.pdf\\'" file)))
+       files))))
 
 (defun ookcite-bibtex-entry-by-key (key &optional files)
   "Return the BibTeX entry matching KEY from FILES.
 
 When FILES is nil, use `ookcite-bibliography-file-list'."
-  (catch 'entry
-    (dolist (file (or files (ookcite-bibliography-file-list)))
-      (when (file-readable-p file)
-        (with-temp-buffer
-          (insert-file-contents file)
-          (bibtex-mode)
-          (goto-char (point-min))
-          (when (bibtex-search-entry key nil)
-            (throw 'entry (bibtex-parse-entry t))))))
-    nil))
+  (or (ookcite-citar-entry-by-key key)
+      (catch 'entry
+        (dolist (file (or files (ookcite-bibliography-file-list)))
+          (when (file-readable-p file)
+            (with-temp-buffer
+              (insert-file-contents file)
+              (bibtex-mode)
+              (goto-char (point-min))
+              (when (bibtex-search-entry key nil)
+                (throw 'entry (bibtex-parse-entry t))))))
+        nil)))
 
 (defun ookcite-bibtex-pdf-file (entry)
   "Return the first PDF path in BibTeX ENTRY's `file' field."
@@ -857,18 +899,24 @@ into the BibTeX `file' field when non-nil."
 
 (defun ookcite-citation-key-at-point ()
   "Return an org-cite or BibTeX citation key at point, or nil."
-  (let ((position (point))
-        key)
-    (save-excursion
-      (goto-char (line-beginning-position))
-      (while (and (not key)
-                  (re-search-forward
-                   "@\\([[:alnum:]_:+.-]+\\)"
-                   (line-end-position) t))
-        (when (and (>= position (match-beginning 0))
-                   (<= position (match-end 1)))
-          (setq key (match-string-no-properties 1)))))
-    key))
+  (or (and ookcite-use-citar
+           (fboundp 'citar-key-at-point)
+           (funcall 'citar-key-at-point))
+      (and ookcite-use-citar
+           (fboundp 'citar-citation-at-point)
+           (car (funcall 'citar-citation-at-point)))
+      (let ((position (point))
+            key)
+        (save-excursion
+          (goto-char (line-beginning-position))
+          (while (and (not key)
+                      (re-search-forward
+                       "@\\([[:alnum:]_:+.-]+\\)"
+                       (line-end-position) t))
+            (when (and (>= position (match-beginning 0))
+                       (<= position (match-end 1)))
+              (setq key (match-string-no-properties 1)))))
+        key)))
 
 ;;;###autoload
 (defun ookcite-add-doi-to-bib (doi &optional bib-file pdf-file)
@@ -1005,6 +1053,51 @@ BibTeX `file' field when non-nil."
    "POST" nil `((id . ,collection-id))))
 
 ;;;###autoload
+(defun ookcite-add-entry-to-collection-async (entry collection-id callback
+                                                    &optional key pdf-file)
+  "Asynchronously import ENTRY into OokCite COLLECTION-ID.
+
+CALLBACK receives ERROR and RESULT.  KEY and PDF-FILE behave as in
+`ookcite-add-entry-to-collection'."
+  (ookcite-request-async
+   'collection-import
+   `((content . ,(ookcite-entry-bibtex entry key pdf-file))
+     (format . "bibtex"))
+   callback
+   "POST" nil `((id . ,collection-id))))
+
+;;;###autoload
+(defun ookcite-add-doi-to-collection-async (doi collection-id callback
+                                                &optional pdf-file)
+  "Asynchronously look up DOI and import it into COLLECTION-ID.
+
+CALLBACK receives ERROR and RESULT.  PDF-FILE is written to the generated
+BibTeX `file' field when non-nil."
+  (ookcite-request-async
+   'lookup-doi `((doi . ,doi))
+   (lambda (error entry)
+     (if error
+         (funcall callback error nil)
+       (ookcite-add-entry-to-collection-async
+        entry collection-id callback nil pdf-file)))))
+
+;;;###autoload
+(defun ookcite-add-citation-to-collection-async (query collection-id callback
+                                                       &optional pdf-file)
+  "Asynchronously resolve QUERY and import it into COLLECTION-ID.
+
+CALLBACK receives ERROR and RESULT.  PDF-FILE is written to the generated
+BibTeX `file' field when non-nil."
+  (ookcite-resolve-async
+   query
+   (lambda (error entries)
+     (if error
+         (funcall callback error nil)
+       (let ((entry (ookcite--read-entry entries)))
+         (ookcite-add-entry-to-collection-async
+          entry collection-id callback nil pdf-file))))))
+
+;;;###autoload
 (defun ookcite-add-doi-to-collection (doi collection-id &optional pdf-file)
   "Look up DOI and import it into OokCite COLLECTION-ID.
 
@@ -1014,12 +1107,16 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
          (ookcite--read-collection-id t)
          (let ((file (read-file-name "PDF file, empty for none: " nil nil nil)))
            (and (ookcite--nonempty-string-p file) file))))
-  (let ((response
-         (ookcite-add-entry-to-collection
-          (ookcite-lookup-doi-sync doi) collection-id nil pdf-file)))
-    (when (called-interactively-p 'interactive)
-      (message "Imported DOI into %s" collection-id))
-    response))
+  (if (called-interactively-p 'interactive)
+      (ookcite-add-doi-to-collection-async
+       doi collection-id
+       (lambda (error _result)
+         (if error
+             (user-error "%s" error)
+           (message "Imported DOI into %s" collection-id)))
+       pdf-file)
+    (ookcite-add-entry-to-collection
+     (ookcite-lookup-doi-sync doi) collection-id nil pdf-file)))
 
 ;;;###autoload
 (defun ookcite-add-citation-to-collection (query collection-id
@@ -1032,14 +1129,18 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
          (ookcite--read-collection-id t)
          (let ((file (read-file-name "PDF file, empty for none: " nil nil nil)))
            (and (ookcite--nonempty-string-p file) file))))
-  (let* ((entries (ookcite--candidate-metadata-list
-                   (ookcite-resolve-sync query)))
-         (entry (ookcite--read-entry entries))
-         (response
-          (ookcite-add-entry-to-collection entry collection-id nil pdf-file)))
-    (when (called-interactively-p 'interactive)
-      (message "Imported citation into %s" collection-id))
-    response))
+  (if (called-interactively-p 'interactive)
+      (ookcite-add-citation-to-collection-async
+       query collection-id
+       (lambda (error _result)
+         (if error
+             (user-error "%s" error)
+           (message "Imported citation into %s" collection-id)))
+       pdf-file)
+    (let* ((entries (ookcite--candidate-metadata-list
+                     (ookcite-resolve-sync query)))
+           (entry (ookcite--read-entry entries)))
+      (ookcite-add-entry-to-collection entry collection-id nil pdf-file))))
 
 ;;;###autoload
 (defun ookcite-export-collection-bibtex (collection-id file)
@@ -1111,11 +1212,34 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
   "Return configured Ridley source files that exist."
   (cl-remove-if-not #'file-exists-p ookcite-ridley-item-json-files))
 
+(defun ookcite-ridley--source-signature ()
+  "Return cache signature for configured Ridley source files."
+  (mapcar
+   (lambda (file)
+     (list file (file-attribute-modification-time (file-attributes file))))
+   (ookcite-ridley--source-files)))
+
+;;;###autoload
+(defun ookcite-ridley-clear-cache ()
+  "Clear cached Ridley item records."
+  (interactive)
+  (setq ookcite-ridley--items-cache nil
+        ookcite-ridley--items-cache-signature nil))
+
 (defun ookcite-ridley-all-items ()
   "Return all Ridley items from `ookcite-ridley-item-json-files'."
-  (apply #'append
-         (mapcar #'ookcite-ridley-read-items-from-file
-                 (ookcite-ridley--source-files))))
+  (let ((signature (ookcite-ridley--source-signature)))
+    (if (and ookcite-ridley-cache-items
+             ookcite-ridley--items-cache
+             (equal signature ookcite-ridley--items-cache-signature))
+        ookcite-ridley--items-cache
+      (let ((items (apply #'append
+                          (mapcar #'ookcite-ridley-read-items-from-file
+                                  (ookcite-ridley--source-files)))))
+        (when ookcite-ridley-cache-items
+          (setq ookcite-ridley--items-cache items
+                ookcite-ridley--items-cache-signature signature))
+        items))))
 
 (defun ookcite-ridley--item-id (item)
   "Return Ridley ITEM id when present."
@@ -1224,6 +1348,33 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
      (member key (ookcite-ridley--item-citation-keys item)))
    (ookcite-ridley-all-items)))
 
+(defun ookcite-ridley--completion-annotation (choices candidate)
+  "Return completion annotation for CANDIDATE in CHOICES."
+  (let ((item (cdr (assoc candidate choices))))
+    (concat
+     " "
+     (string-join
+      (cl-remove-if-not
+       #'ookcite--nonempty-string-p
+       (list (ookcite--entry-year item)
+             (ookcite--entry-doi item)
+             (ookcite-ridley-item-pdf-file item)))
+      " | "))))
+
+(defun ookcite-ridley--completion-table (choices)
+  "Return a metadata-rich completion table for Ridley CHOICES."
+  (let ((metadata `(metadata
+                   (category . ookcite-ridley-item)
+                   (annotation-function
+                    . ,(lambda (candidate)
+                         (ookcite-ridley--completion-annotation
+                          choices candidate))))))
+    (lambda (string predicate action)
+      (if (eq action 'metadata)
+          metadata
+        (complete-with-action action (mapcar #'car choices)
+                              string predicate)))))
+
 (defun ookcite-ridley-read-item ()
   "Prompt for a Ridley item from configured JSON sources."
   (let* ((items (ookcite-ridley-all-items))
@@ -1232,7 +1383,15 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
          (choices
           (cl-loop for item in items-with-docs
                    collect (cons (ookcite-ridley--item-summary item) item)))
-         (choice (completing-read "Ridley item: " choices nil t)))
+         (choice (let ((completion-extra-properties
+                        `(:annotation-function
+                          ,(lambda (candidate)
+                             (ookcite-ridley--completion-annotation
+                              choices candidate)))))
+                   (completing-read
+                    "Ridley item: "
+                    (ookcite-ridley--completion-table choices)
+                    nil t))))
     (or (cdr (assoc choice choices))
         (signal 'ookcite-error (list "No Ridley item selected")))))
 
@@ -1349,8 +1508,9 @@ ENTRY overrides the parsed BibTeX entry."
    (list (or (ookcite-citation-key-at-point)
              (read-string "Citation key: "))))
   (let* ((bibtex-entry (or entry (ookcite-bibtex-entry-by-key key)))
-         (pdf-file (and bibtex-entry
-                        (ookcite-bibtex-pdf-file bibtex-entry))))
+         (pdf-file (or (ookcite-citar-pdf-file-by-key key)
+                       (and bibtex-entry
+                            (ookcite-bibtex-pdf-file bibtex-entry)))))
     (unless bibtex-entry
       (user-error "No BibTeX entry found for %s" key))
     (unless pdf-file
@@ -1368,6 +1528,17 @@ ENTRY overrides the parsed BibTeX entry."
     (if item
         (ookcite-ridley-read item)
       (ookcite-ridley-read-bibtex-key cite-key))))
+
+;;;###autoload
+(defun ookcite-ridley-read-reference (&optional key)
+  "Select a citation KEY and create/open its Ridley reading note."
+  (interactive)
+  (ookcite-ridley-read-at-point
+   (or key
+       (and ookcite-use-citar
+            (fboundp 'citar-select-ref)
+            (funcall 'citar-select-ref))
+       (read-string "Citation key: "))))
 
 ;;;###autoload
 (defun ookcite-ridley-add-doi-and-read (doi bib-file pdf-file)
@@ -1393,6 +1564,7 @@ ENTRY overrides the parsed BibTeX entry."
     (define-key map (kbd "C-c C-o s") #'ookcite-search-styles)
     (define-key map (kbd "C-c C-o r") #'ookcite-ridley-read)
     (define-key map (kbd "C-c C-o R") #'ookcite-ridley-read-at-point)
+    (define-key map (kbd "C-c C-o o") #'ookcite-ridley-read-reference)
     map)
   "Keymap for `ookcite-mode'.")
 
