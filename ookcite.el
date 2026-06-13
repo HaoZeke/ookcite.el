@@ -43,6 +43,7 @@
 ;;; Code:
 
 (require 'auth-source)
+(require 'bibtex)
 (require 'cl-lib)
 (require 'json)
 (require 'pp)
@@ -424,6 +425,7 @@ RAW is forwarded to `ookcite--read-response'."
 (defun ookcite--entry-year (entry)
   "Return publication year from ENTRY as a string, or nil."
   (let ((year (or (ookcite--nested-get entry 'date 'year)
+                  (ookcite--get entry 'year)
                   (ookcite--get entry 'date)
                   (caar (ookcite--nested-get entry 'issued 'date-parts))
                   (ookcite--nested-get entry 'fields 'date))))
@@ -777,6 +779,45 @@ field compatible with org-ref and bibtex-completion."
        (format "@[[:alnum:]]+[{(][[:space:]\n]*%s[[:space:]\n]*,"
                (regexp-quote key))
        nil t))))
+
+(defun ookcite-bibliography-file-list ()
+  "Return configured bibliography files for lookup."
+  (delete-dups
+   (cl-remove-if-not
+    #'ookcite--nonempty-string-p
+    (append ookcite-bibliography-files
+            (ookcite--org-bibliography-files)))))
+
+(defun ookcite-bibtex-entry-by-key (key &optional files)
+  "Return the BibTeX entry matching KEY from FILES.
+
+When FILES is nil, use `ookcite-bibliography-file-list'."
+  (catch 'entry
+    (dolist (file (or files (ookcite-bibliography-file-list)))
+      (when (file-readable-p file)
+        (with-temp-buffer
+          (insert-file-contents file)
+          (bibtex-mode)
+          (goto-char (point-min))
+          (when (bibtex-search-entry key nil)
+            (throw 'entry (bibtex-parse-entry t))))))
+    nil))
+
+(defun ookcite-bibtex-pdf-file (entry)
+  "Return the first PDF path in BibTeX ENTRY's `file' field."
+  (when-let ((file-field (ookcite--get entry 'file)))
+    (let ((parts (split-string file-field "[;\n]" t "[[:space:]]+"))
+          pdf-file)
+      (while (and parts (not pdf-file))
+        (let ((part (pop parts)))
+          (when (string-match
+                 "\\(?:\\`\\|:\\)\\([^:;]+\\.pdf\\)\\(?:[:;]\\|\\'\\)"
+                 part)
+            (setq pdf-file
+                  (expand-file-name
+                   (substitute-in-file-name
+                    (match-string 1 part)))))))
+      pdf-file)))
 
 (defun ookcite-add-entry-to-bibliography (entry &optional file pdf-file)
   "Append ENTRY to BibTeX FILE and return its citation key.
@@ -1300,6 +1341,23 @@ Interactively, choose from `ookcite-ridley-item-json-files'."
     (ookcite-ridley-create-note item pdf-file)))
 
 ;;;###autoload
+(defun ookcite-ridley-read-bibtex-key (key &optional entry)
+  "Create/open a reading note for BibTeX KEY.
+
+ENTRY overrides the parsed BibTeX entry."
+  (interactive
+   (list (or (ookcite-citation-key-at-point)
+             (read-string "Citation key: "))))
+  (let* ((bibtex-entry (or entry (ookcite-bibtex-entry-by-key key)))
+         (pdf-file (and bibtex-entry
+                        (ookcite-bibtex-pdf-file bibtex-entry))))
+    (unless bibtex-entry
+      (user-error "No BibTeX entry found for %s" key))
+    (unless pdf-file
+      (user-error "No PDF file field found for %s" key))
+    (ookcite-ridley-create-note bibtex-entry pdf-file nil key)))
+
+;;;###autoload
 (defun ookcite-ridley-read-at-point (&optional key)
   "Create/open a Ridley reading note for citation KEY at point."
   (interactive)
@@ -1307,9 +1365,9 @@ Interactively, choose from `ookcite-ridley-item-json-files'."
                        (ookcite-citation-key-at-point)
                        (read-string "Citation key: ")))
          (item (ookcite-ridley-find-item-by-key cite-key)))
-    (unless item
-      (user-error "No Ridley item found for %s" cite-key))
-    (ookcite-ridley-read item)))
+    (if item
+        (ookcite-ridley-read item)
+      (ookcite-ridley-read-bibtex-key cite-key))))
 
 ;;;###autoload
 (defun ookcite-ridley-add-doi-and-read (doi bib-file pdf-file)

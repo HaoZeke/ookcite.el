@@ -187,6 +187,27 @@
     (search-forward "vaswani")
     (should (equal (ookcite-citation-key-at-point) "vaswani2017"))))
 
+(ert-deftest ookcite-test-bibtex-entry-by-key ()
+  (let ((file (make-temp-file "ookcite-bib" nil ".bib")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "@article{lovelace1843,\n"
+                    "  title = {Readable Paper},\n"
+                    "  author = {Lovelace, Ada},\n"
+                    "  year = {1843},\n"
+                    "  doi = {10.5555/readable},\n"
+                    "  file = {/tmp/readable.pdf},\n"
+                    "}\n"))
+          (let* ((ookcite-bibliography-files (list file))
+                 (entry (ookcite-bibtex-entry-by-key "lovelace1843")))
+            (should (equal (ookcite--get entry '=key=) "lovelace1843"))
+            (should (equal (ookcite--get entry 'title) "Readable Paper"))
+            (should (equal (ookcite--entry-year entry) "1843"))
+            (should (equal (ookcite-bibtex-pdf-file entry)
+                           "/tmp/readable.pdf"))))
+      (delete-file file))))
+
 (ert-deftest ookcite-test-ridley-find-item-by-key ()
   (let ((item '((itemType . "journalArticle")
                 (title . "Attention Is All You Need")
@@ -219,6 +240,39 @@
                    "opened")))
         (should (equal (ookcite-ridley-read-at-point) "opened"))
         (should (eq selected item))))))
+
+(ert-deftest ookcite-test-ridley-read-at-point-falls-back-to-bibtex ()
+  (let ((file (make-temp-file "ookcite-bib" nil ".bib"))
+        captured)
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "@article{lovelace1843,\n"
+                    "  title = {Readable Paper},\n"
+                    "  author = {Lovelace, Ada},\n"
+                    "  year = {1843},\n"
+                    "  doi = {10.5555/readable},\n"
+                    "  file = {:/tmp/readable.pdf:PDF},\n"
+                    "}\n"))
+          (let ((ookcite-bibliography-files (list file)))
+            (with-temp-buffer
+              (insert "Annotate cite:@lovelace1843 with the PDF notes.")
+              (goto-char (point-min))
+              (search-forward "lovelace")
+              (cl-letf (((symbol-function 'ookcite-ridley-find-item-by-key)
+                         (lambda (_key) nil))
+                        ((symbol-function 'ookcite-ridley-create-note)
+                         (lambda (item pdf-file &optional note-file key)
+                           (setq captured
+                                 (list item pdf-file note-file key))
+                           "opened")))
+                (should (equal (ookcite-ridley-read-at-point) "opened"))
+                (pcase-let ((`(,item ,pdf-file ,note-file ,key) captured))
+                  (should (equal (ookcite--get item 'title) "Readable Paper"))
+                  (should (equal pdf-file "/tmp/readable.pdf"))
+                  (should-not note-file)
+                  (should (equal key "lovelace1843")))))))
+      (delete-file file))))
 
 (provide 'ookcite-test)
 ;;; ookcite-test.el ends here

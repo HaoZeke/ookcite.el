@@ -89,6 +89,7 @@ Ridley reading helpers:
 
 - `ookcite-ridley-read`
 - `ookcite-ridley-read-at-point`
+- `ookcite-ridley-read-bibtex-key`
 - `ookcite-ridley-read-pdf`
 - `ookcite-ridley-add-doi-and-read`
 
@@ -100,7 +101,10 @@ paths are read from `attachmentPath` or asset extras such as `local_path`,
 
 `ookcite-ridley-read-at-point` reads the org-cite key under point, matches it
 against explicit Ridley key fields or the generated citation key, and opens the
-same reading-note flow.
+same reading-note flow. If no Ridley item matches, it falls back to configured
+BibTeX files and uses the entry's `file` field for the PDF path. Direct paths
+and bibtex-completion-style values such as `:/path/to/paper.pdf:PDF` are
+supported.
 
 The note shape matches the org-ref/org-noter flow:
 
