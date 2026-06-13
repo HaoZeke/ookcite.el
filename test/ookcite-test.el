@@ -71,6 +71,24 @@
     (should (string-match-p "doi = {10.5555/test}," bibtex))
     (should (string-match-p "file = {/tmp/paper.pdf}," bibtex))))
 
+(ert-deftest ookcite-test-bibtex-string-authors-stay-readable ()
+  (let ((entry '((title . "Computing Machinery")
+                 (author . "Turing, Alan and Lovelace, Ada")
+                 (year . "1950"))))
+    (should (equal (ookcite-entry-authors-string entry)
+                   "Turing, Alan and Lovelace, Ada"))))
+
+(ert-deftest ookcite-test-ridley-note-text-keeps-bibtex-string-author ()
+  (let* ((item '((title . "Computing Machinery")
+                 (author . "Turing, Alan and Lovelace, Ada")
+                 (year . "1950")
+                 (doi . "10.5555/turing")))
+         (note (ookcite-ridley-note-text item "/tmp/turing.pdf"
+                                         "turing1950")))
+    (should (string-match-p
+             ":AUTHOR: Turing, Alan and Lovelace, Ada" note))
+    (should-not (string-match-p "Anonymous" note))))
+
 (ert-deftest ookcite-test-bibtex-key-exists ()
   (let ((file (make-temp-file "ookcite" nil ".bib")))
     (unwind-protect
@@ -162,6 +180,29 @@
             (should (equal (ookcite-ridley-item-pdf-file (car items))
                            "/tmp/paper.pdf"))))
       (delete-file file))))
+
+(ert-deftest ookcite-test-ridley-directory-bundle-items ()
+  (let* ((dir (make-temp-file "ookcite-ridley-bundle" t))
+         (metadata-dir (expand-file-name "metadata" dir))
+         (files-dir (expand-file-name "files" dir))
+         (pdf-file (expand-file-name "paper.pdf" files-dir)))
+    (unwind-protect
+        (progn
+          (make-directory metadata-dir t)
+          (make-directory files-dir t)
+          (with-temp-file (expand-file-name "item.json" metadata-dir)
+            (insert "{\"title\":\"Bundled Paper\",\"creators\":[{\"firstName\":\"Ada\",\"lastName\":\"Lovelace\"}],\"date\":\"1843\"}"))
+          (with-temp-file (expand-file-name "manifest.json" metadata-dir)
+            (insert "{\"files\":[{\"path\":\"files/paper.pdf\",\"content_type\":\"application/pdf\"}]}"))
+          (with-temp-file pdf-file
+            (insert "%PDF-1.7\n"))
+          (let ((items (ookcite-ridley-read-items-from-file dir)))
+            (should (= (length items) 1))
+            (should (equal (ookcite--entry-title (car items))
+                           "Bundled Paper"))
+            (should (equal (ookcite-ridley-item-pdf-file (car items))
+                           pdf-file))))
+      (delete-directory dir t))))
 
 (ert-deftest ookcite-test-ridley-note-text ()
   (let* ((item '((item_id . "01ABC")

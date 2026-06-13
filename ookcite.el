@@ -180,6 +180,13 @@ array, or a single item object."
   :type '(alist :key-type string :value-type string)
   :group 'ookcite)
 
+(defcustom ookcite-ridley-note-format-function
+  #'ookcite-ridley-default-note-text
+  "Function used to render Ridley org-noter note text.
+The function receives ITEM, PDF-FILE, and citation KEY."
+  :type 'function
+  :group 'ookcite)
+
 (define-error 'ookcite-error "OokCite error")
 (define-error 'ookcite-http-error "OokCite HTTP error" 'ookcite-error)
 
@@ -464,31 +471,39 @@ RAW is forwarded to `ookcite--read-response'."
 
 (defun ookcite--person-family (person)
   "Return PERSON family name or literal name."
-  (or (ookcite--get person 'family)
-      (ookcite--get person 'lastName)
-      (ookcite--get person 'last)
-      (ookcite--get person 'literal)
-      (ookcite--get person 'name)))
+  (if (stringp person)
+      person
+    (or (ookcite--get person 'family)
+        (ookcite--get person 'lastName)
+        (ookcite--get person 'last)
+        (ookcite--get person 'literal)
+        (ookcite--get person 'name))))
 
 (defun ookcite--person-bibtex (person)
   "Return BibTeX name for PERSON."
-  (let ((literal (ookcite--get person 'literal))
-        (family (or (ookcite--get person 'family)
-                    (ookcite--get person 'lastName)
-                    (ookcite--get person 'last)))
-        (given (or (ookcite--get person 'given)
-                   (ookcite--get person 'firstName)
-                   (ookcite--get person 'first))))
-    (cond
-     ((ookcite--nonempty-string-p literal) literal)
-     ((and family given) (format "%s, %s" family given))
-     (family family)
-     (given given)
-     (t "Anonymous"))))
+  (if (stringp person)
+      person
+    (let ((literal (ookcite--get person 'literal))
+          (family (or (ookcite--get person 'family)
+                      (ookcite--get person 'lastName)
+                      (ookcite--get person 'last)))
+          (given (or (ookcite--get person 'given)
+                     (ookcite--get person 'firstName)
+                     (ookcite--get person 'first))))
+      (cond
+       ((ookcite--nonempty-string-p literal) literal)
+       ((and family given) (format "%s, %s" family given))
+       (family family)
+       (given given)
+       (t "Anonymous")))))
 
 (defun ookcite-entry-authors-string (entry)
   "Return ENTRY authors formatted for display."
-  (mapconcat #'ookcite--person-bibtex (ookcite--entry-authors entry) ", "))
+  (let ((authors (ookcite--entry-authors entry)))
+    (cond
+     ((stringp authors) authors)
+     ((listp authors) (mapconcat #'ookcite--person-bibtex authors ", "))
+     (t nil))))
 
 (defun ookcite--ascii-slug (value)
   "Return an ASCII citation-key slug from VALUE."
@@ -1200,6 +1215,45 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
      :null-object nil
      :false-object :json-false)))
 
+(defun ookcite-ridley--bundle-metadata-file (bundle name)
+  "Return metadata NAME path from directory BUNDLE."
+  (expand-file-name name (expand-file-name "metadata" bundle)))
+
+(defun ookcite-ridley--manifest-files (manifest)
+  "Return file records from bundle MANIFEST."
+  (or (ookcite--get manifest 'files)
+      (ookcite--get manifest 'assets)))
+
+(defun ookcite-ridley--manifest-primary-pdf (manifest)
+  "Return primary PDF path from bundle MANIFEST."
+  (cl-loop for file in (ookcite-ridley--manifest-files manifest)
+           for path = (or (ookcite--get file 'path)
+                          (ookcite--get file 'package_path)
+                          (ookcite--get file 'packagePath))
+           for content-type = (or (ookcite--get file 'content_type)
+                                  (ookcite--get file 'contentType))
+           when (and path
+                     (or (string-match-p "\\.pdf\\'" path)
+                         (equal content-type "application/pdf")))
+           return path))
+
+(defun ookcite-ridley--directory-bundle-item (bundle)
+  "Return a Ridley item from directory BUNDLE."
+  (let ((item-file (ookcite-ridley--bundle-metadata-file bundle "item.json"))
+        (manifest-file (ookcite-ridley--bundle-metadata-file bundle
+                                                            "manifest.json")))
+    (when (file-readable-p item-file)
+      (let* ((item (ookcite-ridley--json-file item-file))
+             (manifest (and (file-readable-p manifest-file)
+                            (ookcite-ridley--json-file manifest-file)))
+             (pdf-path (and manifest
+                            (ookcite-ridley--manifest-primary-pdf manifest))))
+        (append item
+                `((ookcite_bundle_path . ,bundle)
+                  ,@(when pdf-path
+                      `((ookcite_bundle_pdf_file
+                         . ,(expand-file-name pdf-path bundle))))))))))
+
 (defun ookcite-ridley--item-list (value)
   "Return a flat item list from Ridley JSON VALUE."
   (cond
@@ -1215,7 +1269,10 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
 
 (defun ookcite-ridley-read-items-from-file (file)
   "Return Ridley item records from FILE."
-  (ookcite-ridley--item-list (ookcite-ridley--json-file file)))
+  (if (file-directory-p file)
+      (when-let ((item (ookcite-ridley--directory-bundle-item file)))
+        (list item))
+    (ookcite-ridley--item-list (ookcite-ridley--json-file file))))
 
 (defun ookcite-ridley--source-files ()
   "Return configured Ridley source files that exist."
@@ -1276,17 +1333,26 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
 
 (defun ookcite-ridley--authors-string (item)
   "Return author string for Ridley ITEM."
-  (mapconcat
-   (lambda (creator)
-     (let ((first (or (ookcite--get creator 'firstName)
-                      (ookcite--get creator 'first)
-                      (ookcite--get creator 'given)))
-           (last (ookcite-ridley--creator-family creator)))
-       (string-join (cl-remove-if-not #'ookcite--nonempty-string-p
-                                      (list first last))
-                    " ")))
-   (or (ookcite--get item 'creators) (ookcite--get item 'authors))
-   ", "))
+  (let ((creators (or (ookcite--get item 'creators)
+                      (ookcite--get item 'authors)
+                      (ookcite--get item 'author))))
+    (cond
+     ((stringp creators) creators)
+     ((listp creators)
+      (mapconcat
+       (lambda (creator)
+         (if (stringp creator)
+             creator
+           (let ((first (or (ookcite--get creator 'firstName)
+                            (ookcite--get creator 'first)
+                            (ookcite--get creator 'given)))
+                 (last (ookcite-ridley--creator-family creator)))
+             (string-join (cl-remove-if-not #'ookcite--nonempty-string-p
+                                            (list first last))
+                          " "))))
+       creators
+       ", "))
+     (t nil))))
 
 (defun ookcite-ridley--path-reference-candidates (raw)
   "Return filesystem path candidates for RAW."
@@ -1315,11 +1381,12 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
   "Return local PDF path candidates for Ridley ITEM."
   (let ((direct (ookcite-ridley--path-reference-candidates
                  (ookcite-ridley--field item 'attachmentPath)))
+        (bundle-pdf (ookcite--get item 'ookcite_bundle_pdf_file))
         (asset-paths
          (apply #'append
                 (mapcar #'ookcite-ridley--asset-path-candidates
                         (or (ookcite--get item 'assets) nil)))))
-    (delete-dups (append direct asset-paths))))
+    (delete-dups (append direct (and bundle-pdf (list bundle-pdf)) asset-paths))))
 
 (defun ookcite-ridley-item-pdf-file (item)
   "Return the best local PDF file path for Ridley ITEM."
@@ -1429,7 +1496,7 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
     ookcite-ridley-org-noter-properties)
    "\n"))
 
-(defun ookcite-ridley-note-text (item pdf-file &optional key)
+(defun ookcite-ridley-default-note-text (item pdf-file &optional key)
   "Return org-noter note text for Ridley ITEM and PDF-FILE.
 
 KEY overrides the citation key in Org properties."
@@ -1468,6 +1535,12 @@ KEY overrides the citation key in Org properties."
             ":END:\n\n"
             (format "[[%s][PDF]]\n\n" pdf-file)
             (format "cite:@%s\n\n" cite-key))))
+
+(defun ookcite-ridley-note-text (item pdf-file &optional key)
+  "Return org-noter note text for Ridley ITEM and PDF-FILE.
+
+KEY overrides the citation key in Org properties."
+  (funcall ookcite-ridley-note-format-function item pdf-file key))
 
 (defun ookcite-ridley--goto-note (key)
   "Move point to a note with Custom_ID KEY when it exists."
