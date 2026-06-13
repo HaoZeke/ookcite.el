@@ -180,6 +180,24 @@
     (should (string-match-p ":RIDLEY_ITEM_ID: 01ABC" note))
     (should (string-match-p "cite:@lovelace1843" note))))
 
+(ert-deftest ookcite-test-ridley-note-text-org-noter-properties ()
+  (let* ((item '((title . "Readable Paper")
+                 (date . "1843")
+                 (attachmentPath . "/tmp/readable.pdf")))
+         (ookcite-ridley-org-noter-properties
+          '(("NOTER_NOTES_BEHAVIOR" . "(start scroll)")
+            ("NOTER_NOTES_LOCATION" . "horizontal-split")
+            ("NOTER_DOCUMENT_SPLIT_FRACTION" . "(0.55 . 0.45)")
+            ("NOTER_AUTO_SAVE_LAST_LOCATION" . "t")))
+         (note (ookcite-ridley-note-text item "/tmp/readable.pdf"
+                                         "lovelace1843")))
+    (should (string-match-p ":NOTER_NOTES_BEHAVIOR: (start scroll)" note))
+    (should (string-match-p ":NOTER_NOTES_LOCATION: horizontal-split" note))
+    (should (string-match-p
+             ":NOTER_DOCUMENT_SPLIT_FRACTION: (0.55 . 0.45)"
+             note))
+    (should (string-match-p ":NOTER_AUTO_SAVE_LAST_LOCATION: t" note))))
+
 (ert-deftest ookcite-test-citation-key-at-point ()
   (with-temp-buffer
     (insert "See cite:@vaswani2017 for the transformer baseline.")

@@ -137,10 +137,18 @@ The note shape matches the org-ref/org-noter flow:
 :Custom_ID: key2026
 :ROAM_KEY: cite:key2026
 :NOTER_DOCUMENT: /path/to/paper.pdf
+:NOTER_NOTES_BEHAVIOR: (start scroll)
+:NOTER_NOTES_LOCATION: horizontal-split
+:NOTER_DOCUMENT_SPLIT_FRACTION: (0.55 . 0.45)
+:NOTER_AUTO_SAVE_LAST_LOCATION: t
 :RIDLEY_ITEM_ID: 01...
 :DOI: 10....
 :END:
 ```
+
+Those org-noter session properties come from
+`ookcite-ridley-org-noter-properties`; set it to nil or replace entries if you
+prefer global org-noter defaults.
 
 ## Verification
 

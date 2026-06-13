@@ -171,6 +171,15 @@ array, or a single item object."
   :type '(repeat string)
   :group 'ookcite)
 
+(defcustom ookcite-ridley-org-noter-properties
+  '(("NOTER_NOTES_BEHAVIOR" . "(start scroll)")
+    ("NOTER_NOTES_LOCATION" . "horizontal-split")
+    ("NOTER_DOCUMENT_SPLIT_FRACTION" . "(0.55 . 0.45)")
+    ("NOTER_AUTO_SAVE_LAST_LOCATION" . "t"))
+  "Org-noter session properties written to Ridley reading notes."
+  :type '(alist :key-type string :value-type string)
+  :group 'ookcite)
+
 (define-error 'ookcite-error "OokCite error")
 (define-error 'ookcite-http-error "OokCite HTTP error" 'ookcite-error)
 
@@ -1408,6 +1417,18 @@ PDF-FILE is written to the generated BibTeX `file' field when non-nil."
                                key (ookcite--entry-title item))
                               ".org"))))
 
+(defun ookcite-ridley--org-noter-properties-text ()
+  "Return Org property lines for configured org-noter session properties."
+  (mapconcat
+   (pcase-lambda (`(,property . ,value))
+     (format ":%s: %s" property value))
+   (cl-remove-if-not
+    (pcase-lambda (`(,property . ,value))
+      (and (ookcite--nonempty-string-p property)
+           (ookcite--nonempty-string-p value)))
+    ookcite-ridley-org-noter-properties)
+   "\n"))
+
 (defun ookcite-ridley-note-text (item pdf-file &optional key)
   "Return org-noter note text for Ridley ITEM and PDF-FILE.
 
@@ -1426,6 +1447,9 @@ KEY overrides the citation key in Org properties."
             (format ":Custom_ID: %s\n" cite-key)
             (format ":ROAM_KEY: cite:%s\n" cite-key)
             (format ":NOTER_DOCUMENT: %s\n" pdf-file)
+            (when-let ((properties (ookcite-ridley--org-noter-properties-text)))
+              (and (not (string-empty-p properties))
+                   (concat properties "\n")))
             (when-let ((ridley-id (ookcite-ridley--item-id item)))
               (format ":RIDLEY_ITEM_ID: %s\n" ridley-id))
             (when-let ((doi (ookcite--entry-doi item)))
